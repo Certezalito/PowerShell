@@ -2,7 +2,7 @@
 # This article handles pages better https://cynicalsys.com/2019/09/13/working-with-large-exchange-messages-traces-in-powershell/
 
 # How many days back do we want to look?  
-$days = '7'
+$days = '1'
 # How many top senders do you want detail on?
 $topsenders = '10'
 # Output location
@@ -40,3 +40,7 @@ $final | Group-Object senderaddress | Sort-Object count -Descending | Export-Csv
 # Output of top x sender emails
 Write-Host "Output Top $topsenders senders to $path\$($domain)_top10_senders_detail.csv" -ForegroundColor Yellow
 $final | Group-Object senderaddress | Sort-Object count -Descending | Select-Object -First $topsenders | Select-Object -ExpandProperty group | Export-Csv -NoTypeInformation "$path\$($domain)_top10_senders_detail.csv"
+
+
+
+$final | Group-Object senderaddress | Sort-Object count -Descending | Select-Object -ExpandProperty group | Export-Csv -NoTypeInformation "$path\$($domain)_all_senders_detail.csv"
