@@ -1,4 +1,4 @@
-# Script to setup a Virtual Machine Guest with GPU-P Adapter
+# Script to setup a Virtual Machine Guest with Nvidia GPU-P Adapter
 # Script will copy Nvidia driver files to Guest Virtual Machine, rerun script when driver updates
 # Script will disable checkpoints
 # Assumptions: There is one GPU to Partition, the one GPU is Nvidia, script is running as admin, you connect to machine as basic session, dynamic memory is disabled
