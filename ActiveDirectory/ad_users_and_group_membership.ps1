@@ -45,7 +45,7 @@ foreach ($users in $users)
     $grouphash.Add($users.samaccountname,$groupmembership) 
 }
 
-# Iterate through each user in the userenabled hash table and store enabled, group membership in arrary
+# Iterate through each user in the userenabled hash table and store enabled, group membership in array
  foreach($key in $userenabled.keys) {
     # Declare empty object for loop use
     $output = New-Object PSObject
