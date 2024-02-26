@@ -52,7 +52,7 @@ Write-Host "Setting VM Options"
 Set-VM -GuestControlledCacheTypes $true -VMName $vm
 # Some say 1gb, some say 3gb
 Set-VM -LowMemoryMappedIoSpace 3Gb -VMName $vm
-Set-VM –HighMemoryMappedIoSpace 32GB –VMName $vm
+Set-VM -HighMemoryMappedIoSpace 32GB -VMName $vm
 
 # Enable the Guest Service Integration to use PowerShell Direct / Copy Files 
 Write-Host "Enabling Guest Service Interface"
