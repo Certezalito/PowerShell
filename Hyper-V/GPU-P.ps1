@@ -10,6 +10,7 @@
 # https://forum.level1techs.com/t/2-gamers-1-gpu-with-hyper-v-gpu-p-gpu-partitioning-finally-made-possible-with-hyperv/172234/12
 # https://docs.microsoft.com/en-us/virtualization/hyper-v-on-windows/user-guide/powershell-direct#copy-files-with-new-pssession-and-copy-item
 # https://docs.microsoft.com/en-us/windows-server/virtualization/hyper-v/deploy/deploying-graphics-devices-using-dda#configure-the-vm-for-dda
+# https://forum.level1techs.com/t/2-gamers-1-gpu-with-hyper-v-gpu-p-gpu-partitioning-finally-made-possible-with-hyperv/172234/267
 
 # Fill out these variables for the guest virtual machine
 $vm = ""
@@ -19,6 +20,11 @@ $password = ""
 # Credential Building
 $password = ConvertTo-SecureString "$password" -AsPlainText -Force
 $cred = New-Object System.Management.Automation.PSCredential ($user,$password)
+
+# Registry entries required
+New-Item HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV
+Set-ItemProperty -Path “HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV” -Name “RequireSecureDeviceAssignment” -Type DWORD -Value 0 -Force
+Set-ItemProperty -Path “HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV” -Name “RequireSupportedDeviceAssignment” -Type DWORD -Value 0 -Force
 
 # Stop the Virtual Machine
 Write-Host "Shutting Down Virtual Machine: $vm" 
@@ -50,7 +56,6 @@ Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) 
 # Required Items
 Write-Host "Setting VM Options"
 Set-VM -GuestControlledCacheTypes $true -VMName $vm
-# Some say 1gb, some say 3gb
 Set-VM -LowMemoryMappedIoSpace 3Gb -VMName $vm
 Set-VM -HighMemoryMappedIoSpace 32GB -VMName $vm
 
@@ -87,18 +92,16 @@ $pathguest = $pathguest + $driverfolder + "\"
 # Copies the driver folder to the guest folder path
 Write-Host "Beginning File Copy to Guest Virtual Machine" 
 Copy-Item -ToSession $session -Path $pathdriver -Destination $pathguest -Recurse -Force
-
-# Copies the nvapi64.dll file to system32 on the guest virtual machine  
-Write-Host "End of File Copy to Guest Virtual Machine" 
-# Copy-Item -ToSession $session -Path 'C:\Windows\System32\nvapi64.dll' -Destination C:\Windows\System32\ -Force
-# Testing - copy all the files except NvAgent.dll (?)  Reading you may need other DLLs for parsec use (encoding)
+# Copies the nv*.dll files to system32 on the guest virtual machine except NvAgent.dll and nvspinfo.exe (?)
 Get-ChildItem -Path C:\Windows\System32\nv*dll | ? {$_.name -notlike 'NvAgent.dll'} | ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
+Write-Host "End File Copy to Guest Virtual Machine" 
 
 # Remove PSSession
 Write-Host "Removing PowerShell Session"
 Remove-PSSession $session
 
 # Restart the Guest Virtual Machine to Enable the GPU 
+Write-Host "Restarting Virtual Machine $vm to enable GPU"
 Write-Host "Shutting Down Virtual Machine: $vm" 
 Stop-VM $vm 
 Write-Host "Starting up Virtual Machine: $vm"
