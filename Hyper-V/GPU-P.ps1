@@ -41,11 +41,11 @@ Add-VMGpuPartitionAdapter -VMName $vm
 # Set the values of the GPU partitioned adapter
 Write-Host "Setting GPU-P Adapter Parameters"
 # Production 100%
-# Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode $gpu.MaxPartitionDecode -OptimalPartitionDecode ($gpu.OptimalPartitionDecode) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute)
+Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode $gpu.MaxPartitionDecode -OptimalPartitionDecode ($gpu.OptimalPartitionDecode) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute)
 
 # Testing, setting max to less than 100% 
-$factor = .8
-Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode * $factor) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode * $factor) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode ($gpu.MaxPartitionDecode * $factor) -OptimalPartitionDecode ($gpu.OptimalPartitionDecode * $factor) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute * $factor) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute  * $factor)
+# $factor = .8
+# Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode * $factor) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode * $factor) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode ($gpu.MaxPartitionDecode * $factor) -OptimalPartitionDecode ($gpu.OptimalPartitionDecode * $factor) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute * $factor) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute  * $factor)
 
 # Required Items
 Write-Host "Setting VM Options"
