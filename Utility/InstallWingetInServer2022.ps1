@@ -2,6 +2,7 @@
 
 # Reference: 
 # https://github.com/microsoft/winget-cli/issues/700#issuecomment-874084714
+# https://gist.github.com/maxkoshevoi/60d7b7910ad6ddcc6e1c9b656a8d0301
 
 # Working folder for downloading and installing from, change this if you wish
 $folder = "$env:USERPROFILE" + "\Downloads"
