@@ -16,10 +16,12 @@ Add-AppxPackage $folder\Microsoft.VCLibs.x64.14.00.Desktop.appx
 # Get winget
 Invoke-WebRequest https://aka.ms/getwingetpreview -OutFile $folder\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle
 # Get winget license
-Invoke-WebRequest https://github.com/microsoft/winget-cli/releases/download/v1.6.3482/24146eb205d040e69ef2d92d7034d97f_License1.xml -OutFile $folder\24146eb205d040e69ef2d92d7034d97f_License1.xml
+$latestlicense=(Invoke-WebRequest https://api.github.com/repos/microsoft/winget-cli/releases/latest | ConvertFrom-Json ).assets | where {$_.name -like "*xml"} 
+Invoke-WebRequest $latestlicense.browser_download_url -OutFile ($folder + "\" + ($latestlicense.name))
 
 # Install winget / "app installer"
-Add-AppxProvisionedPackage -Online -PackagePath $folder\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle -LicensePath $folder\24146eb205d040e69ef2d92d7034d97f_License1.xml
+Add-AppxProvisionedPackage -Online -PackagePath $folder\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle -LicensePath ($folder + "\" + ($latestlicense.name))
+
 
 
 # Testing
