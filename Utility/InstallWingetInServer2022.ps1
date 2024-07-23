@@ -1,4 +1,5 @@
 ﻿# Getting winget working on Windows Server 2022
+# You Better off using Window Server 2025 that supports winget out of the box: https://techcommunity.microsoft.com/t5/windows-server-events/demo-bytes-failover-clustering-installing-packages-with-winget/ev-p/4080101
 
 # Reference: 
 # https://github.com/microsoft/winget-cli/issues/700#issuecomment-874084714
