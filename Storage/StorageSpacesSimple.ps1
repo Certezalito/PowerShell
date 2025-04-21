@@ -57,4 +57,4 @@ $HDDTierSize = ($HDDTierSize -= 1000000000)
 New-VirtualDisk -StoragePoolFriendlyName $PoolName -FriendlyName $TieredSpaceName -StorageTiers @($storagetier[0],$storagetier[1]) -StorageTierSizes @($SSDTierSize,$HDDTierSize) -ResiliencySettingName $ResiliencySetting  -AutoWriteCacheSize 
 
 # Create the Useable Volume 
-Get-VirtualDisk  $TieredSpaceName | Initialize-Disk -PartitionStyle GPT -PassThru | New-Partition -UseMaximumSize -AssignDriveLetter | Format-Volume -FileSystem refs  -SetIntegrityStreams $true -NewFileSystemLabel $TieredSpaceName -AllocationUnitSize 65536 
+Get-VirtualDisk  $TieredSpaceName | Initialize-Disk -PartitionStyle GPT -PassThru | New-Partition -UseMaximumSize -AssignDriveLetter | Format-Volume -FileSystem refs  -SetIntegrityStreams $false -NewFileSystemLabel $TieredSpaceName -AllocationUnitSize 65536 
