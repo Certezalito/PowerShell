@@ -1,7 +1,7 @@
-# Script to setup a Virtual Machine Guest with Nvidia GPU-P Adapter
-# Script will copy Nvidia driver files to Guest Virtual Machine, rerun script when driver updates
+# Script to setup a Virtual Machine Guest with an AMD or Nvidia GPU-P Adapter
+# Script will copy driver files to Guest Virtual Machine, rerun script when driver updates
 # Script will disable checkpoints
-# Assumptions: There is one GPU to Partition, the one GPU is Nvidia, script is running as admin, you connect to machine as basic session, dynamic memory is disabled
+# Assumptions: There is one GPU to Partition, either AMD or Nvidia, script is running as admin, you connect to machine as basic session, dynamic memory is disabled
 # Requirements: Credentials for Guest Virtual Machine to copy the Host Driver Files to the Guest Virtual Machine 
 
 # Reference
@@ -23,8 +23,8 @@ $cred = New-Object System.Management.Automation.PSCredential ($user,$password)
 
 # Registry entries required
 New-Item HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV
-Set-ItemProperty -Path “HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV” -Name “RequireSecureDeviceAssignment” -Type DWORD -Value 0 -Force
-Set-ItemProperty -Path “HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV” -Name “RequireSupportedDeviceAssignment” -Type DWORD -Value 0 -Force
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV" -Name "RequireSecureDeviceAssignment" -Type DWORD -Value 0 -Force
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\HyperV" -Name "RequireSupportedDeviceAssignment" -Type DWORD -Value 0 -Force
 
 # Stop the Virtual Machine
 Write-Host "Shutting Down Virtual Machine: $vm" 
@@ -82,19 +82,52 @@ $session = New-PSSession -VMName $vm -Credential $cred
 $pathhost = 'C:\Windows\System32\DriverStore\FileRepository\'
 $pathguest = 'C:\Windows\System32\HostDriverStore\FileRepository\'
 
-# Determine the driver path of the newest Nvidia driver on the host system
-$pathdriver = ((Get-ChildItem -Path $pathhost -Recurse nvapi64.dll  | Sort-Object CreationTime -Descending | Select-Object -First 1).DirectoryName + "\")
-# Determine the driver folder name 
-$driverfolder = ($pathdriver -split "\\")[5]
-# Update guest folder path with driver folder name 
-$pathguest = $pathguest + $driverfolder + "\"
 
-# Copies the driver folder to the guest folder path
-Write-Host "Beginning File Copy to Guest Virtual Machine" 
-Copy-Item -ToSession $session -Path $pathdriver -Destination $pathguest -Recurse -Force
-# Copies the nv*.dll files to system32 on the guest virtual machine except NvAgent.dll and nvspinfo.exe (?)
-Get-ChildItem -Path C:\Windows\System32\nv*dll | ? {$_.name -notlike 'NvAgent.dll'} | ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
-Write-Host "End File Copy to Guest Virtual Machine" 
+if ($gpu -like "*VEN_1002*")
+{
+    Write-Host "GPU is AMD, continuing script"
+    # Determine the driver path of the newest AMD driver on the host system
+    $pathdriver = ((Get-ChildItem -Path $pathhost -Recurse amdxx64.dll | Sort-Object CreationTime -Descending | Select-Object -First 1).DirectoryName + "\")
+
+    # Determine the driver folder name 
+    $driverfolder = ($pathdriver -split "\\")[5,6] -join "\"
+    # Update guest folder path with driver folder name 
+    $pathguest = $pathguest + $driverfolder + "\"
+
+    # Copies the driver folder to the guest folder path
+    Write-Host "Beginning File Copy to Guest Virtual Machine" 
+    Copy-Item -ToSession $session -Path $pathdriver -Destination $pathguest -Recurse -Force
+
+    # Not needed on AMD 
+    # Copies the amd*.dll files to system32 on the guest virtual machine
+    # Get-ChildItem -Path C:\Windows\System32\amd*dll |  ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
+    Write-Host "End File Copy to Guest Virtual Machine" 
+
+}
+elseif ($gpu -like "*VEN_10DE*")
+{
+    Write-Host "GPU is Nvidia, continuing script"
+    # Determine the driver path of the newest Nvidia driver on the host system
+    $pathdriver = ((Get-ChildItem -Path $pathhost -Recurse nvapi64.dll  | Sort-Object CreationTime -Descending | Select-Object -First 1).DirectoryName + "\")
+
+    # Determine the driver folder name 
+    $driverfolder = ($pathdriver -split "\\")[5]
+    # Update guest folder path with driver folder name 
+    $pathguest = $pathguest + $driverfolder + "\"
+
+    # Copies the driver folder to the guest folder path
+    Write-Host "Beginning File Copy to Guest Virtual Machine" 
+    Copy-Item -ToSession $session -Path $pathdriver -Destination $pathguest -Recurse -Force
+    # Copies the nv*.dll files to system32 on the guest virtual machine except NvAgent.dll and nvspinfo.exe (?)
+    Get-ChildItem -Path C:\Windows\System32\nv*dll | ? {$_.name -notlike 'NvAgent.dll'} | ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
+    Write-Host "End File Copy to Guest Virtual Machine" 
+
+    }
+else
+{
+    Write-Host "GPU is not AMD or Nvidia, exiting script"
+    exit
+}
 
 # Remove PSSession
 Write-Host "Removing PowerShell Session"
