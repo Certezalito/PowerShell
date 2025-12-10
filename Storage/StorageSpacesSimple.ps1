@@ -49,9 +49,9 @@ $storagetier = (Get-StorageTier | Sort-Object size)
 # Get the Storage Tier Max Size
 $SSDTierSize = (Get-StorageTierSupportedSize -FriendlyName $SSDTierName -ResiliencySettingName $ResiliencySetting).TierSizeMax
 $HDDTierSize = (Get-StorageTierSupportedSize -FriendlyName $HDDTierName -ResiliencySettingName $ResiliencySetting).TierSizeMax 
-# Trim 1gb to fit into New-VirtualDisk StorageTierSizes.  I see reports you may have to use 4gb or more.
-$SSDTierSize = ($SSDTierSize -= 1000000000)
-$HDDTierSize = ($HDDTierSize -= 1000000000)
+# Trim 2gb to fit into New-VirtualDisk StorageTierSizes.  I see reports you may have to use 4gb or more.  If you have errors in the New-VirtualDisk start trimming here.
+$SSDTierSize = ($SSDTierSize -= 2000000000)
+$HDDTierSize = ($HDDTierSize -= 2000000000)
 
 # Create the Virtual Disk
 New-VirtualDisk -StoragePoolFriendlyName $PoolName -FriendlyName $TieredSpaceName -StorageTiers @($storagetier[0],$storagetier[1]) -StorageTierSizes @($SSDTierSize,$HDDTierSize) -ResiliencySettingName $ResiliencySetting  -AutoWriteCacheSize 
