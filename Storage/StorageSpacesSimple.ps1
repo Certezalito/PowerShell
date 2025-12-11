@@ -1,4 +1,4 @@
-# Script creates Storage Space in Simple mode: HDD + SSD cache
+# Script creates Storage Space in Simple mode: HDD + SSD (no cache in this mode)
 # Combined what's available on the internet then used an System.Array to pass data into the StorageTiers parameter.
 # Used a different method to trim the StorageTierSupportedSize
 # Used LogicalSectorSizeDefault 4kb on the creation of the Storage Pool
