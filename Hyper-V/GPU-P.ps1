@@ -22,8 +22,8 @@ $preferredGpuIdToken = ""
 $preferredNpuIdToken = ""
 # Optional: provision a second non-display partitionable device (for example Intel NPU)
 $enableNpuProvisioning = $false
-# Optional: apply guest RDP stability policy workaround (recommended for Intel GPU-P)
-$applyIntelRdpWorkaround = $true
+# Optional: guest RDP fallback for protocol disconnects. Can improve stability but may increase latency; keep disabled unless needed.
+$applyIntelRdpWorkaround = $false
 # Optional: faster package transfer via zip archive over PowerShell Direct
 $useArchiveTransfer = $true
 
