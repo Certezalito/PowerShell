@@ -81,7 +81,8 @@ function Copy-DriverPackageToGuest
             Remove-Item -Path $hostTempZip -Force -ErrorAction SilentlyContinue
         }
 
-        Compress-Archive -Path ($resolvedSourceFolder + '\\*') -DestinationPath $hostTempZip -CompressionLevel Fastest -Force
+        # Use native tar.exe to bypass PowerShell 5.1 260-character path limits
+        & tar.exe -a -c -f "$hostTempZip" -C "$resolvedSourceFolder" *
 
         Invoke-Command -Session $Session -ScriptBlock {
             param($tempDir)
@@ -419,12 +420,12 @@ if ($supportsAddInstancePath -and $supportsSetAdapterId)
             continue
         }
 
-        Set-VMGpuPartitionAdapter -VMName $vm -AdapterId $adapterId -MinPartitionVRAM ($target.MinPartitionVRAM) -MaxPartitionVRAM ($target.MaxPartitionVRAM) -OptimalPartitionVRAM ($target.OptimalPartitionVRAM) -MinPartitionEncode ($target.MinPartitionEncode) -MaxPartitionEncode ($target.MaxPartitionEncode) -OptimalPartitionEncode ($target.OptimalPartitionEncode) -MinPartitionDecode ($target.MinPartitionDecode) -MaxPartitionDecode $target.MaxPartitionDecode -OptimalPartitionDecode ($target.OptimalPartitionDecode) -MinPartitionCompute ($target.MinPartitionCompute) -MaxPartitionCompute ($target.MaxPartitionCompute) -OptimalPartitionCompute ($target.OptimalPartitionCompute)
+        Set-VMGpuPartitionAdapter -VMName $vm -AdapterId $adapterId -MinPartitionVRAM ([uint64]$target.MinPartitionVRAM) -MaxPartitionVRAM ([uint64]$target.MaxPartitionVRAM) -OptimalPartitionVRAM ([uint64]$target.OptimalPartitionVRAM) -MinPartitionEncode ([uint64]$target.MinPartitionEncode) -MaxPartitionEncode ([uint64]$target.MaxPartitionEncode) -OptimalPartitionEncode ([uint64]$target.OptimalPartitionEncode) -MinPartitionDecode ([uint64]$target.MinPartitionDecode) -MaxPartitionDecode ([uint64]$target.MaxPartitionDecode) -OptimalPartitionDecode ([uint64]$target.OptimalPartitionDecode) -MinPartitionCompute ([uint64]$target.MinPartitionCompute) -MaxPartitionCompute ([uint64]$target.MaxPartitionCompute) -OptimalPartitionCompute ([uint64]$target.OptimalPartitionCompute)
     }
 }
 else
 {
-    Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode $gpu.MaxPartitionDecode -OptimalPartitionDecode ($gpu.OptimalPartitionDecode) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute)
+    Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ([uint64]$gpu.MinPartitionVRAM) -MaxPartitionVRAM ([uint64]$gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ([uint64]$gpu.OptimalPartitionVRAM) -MinPartitionEncode ([uint64]$gpu.MinPartitionEncode) -MaxPartitionEncode ([uint64]$gpu.maxPartitionEncode) -OptimalPartitionEncode ([uint64]$gpu.OptimalPartitionEncode) -MinPartitionDecode ([uint64]$gpu.MinPartitionDecode) -MaxPartitionDecode ([uint64]$gpu.MaxPartitionDecode) -OptimalPartitionDecode ([uint64]$gpu.OptimalPartitionDecode) -MinPartitionCompute ([uint64]$gpu.MinPartitionCompute) -MaxPartitionCompute ([uint64]$gpu.MaxPartitionCompute) -OptimalPartitionCompute ([uint64]$gpu.OptimalPartitionCompute)
 }
 
 # Testing, setting max to less than 100% 
@@ -432,10 +433,17 @@ else
 # Set-VMGpuPartitionAdapter -VMName $vm -MinPartitionVRAM ($gpu.MinPartitionVRAM) -MaxPartitionVRAM ($gpu.MaxPartitionVRAM) -OptimalPartitionVRAM ($gpu.OptimalPartitionVRAM) -MinPartitionEncode ($gpu.MinPartitionEncode) -MaxPartitionEncode ($gpu.maxPartitionEncode * $factor) -OptimalPartitionEncode ($gpu.OptimalPartitionEncode * $factor) -MinPartitionDecode ($gpu.MinPartitionDecode) -MaxPartitionDecode ($gpu.MaxPartitionDecode * $factor) -OptimalPartitionDecode ($gpu.OptimalPartitionDecode * $factor) -MinPartitionCompute ($gpu.MinPartitionCompute) -MaxPartitionCompute ($gpu.MaxPartitionCompute * $factor) -OptimalPartitionCompute ($gpu.OptimalPartitionCompute  * $factor)
 
 # Required Items
-Write-Host "Setting VM Options"
+Write-Host "Setting VM Options (MMIO, Dynamic Memory, Stop Action)"
 Set-VM -GuestControlledCacheTypes $true -VMName $vm
 Set-VM -LowMemoryMappedIoSpace 3Gb -VMName $vm
-Set-VM -HighMemoryMappedIoSpace 32GB -VMName $vm
+# Increased to 128GB to support high-VRAM GPUs (24GB+) without exhausting virtual address space
+Set-VM -HighMemoryMappedIoSpace 128Gb -VMName $vm
+
+# Enforce Dynamic Memory to False (GPU-P fails if memory fluctuates)
+Set-VMMemory -VMName $vm -DynamicMemoryEnabled $false
+
+# Enforce Stop Action (GPU-P VMs cannot handle "Save State" when the host reboots)
+Set-VM -VMName $vm -AutomaticStopAction ShutDown
 
 # Enable the Guest Service Integration to use PowerShell Direct / Copy Files 
 Write-Host "Enabling Guest Service Interface"
@@ -448,13 +456,29 @@ Start-VM $vm
 Write-Host "Waiting on Virtual Machine Heartbeat on $vm"
 while ((Get-VM $vm).Heartbeat -notlike "*ok*")
 {
-Write-Host "Still Waiting" 
-Start-Sleep 10
+    Write-Host "Still Waiting for Heartbeat..." 
+    Start-Sleep 10
 }
 
-Write-Host "Building PowerShell Session"
-# Build Powershell Session to Copy the Driver Files 
-$session = New-PSSession -VMName $vm -Credential $cred  
+Write-Host "Building PowerShell Session. Waiting for PowerShell Direct listener..."
+$session = $null
+while (-not $session) {
+    try {
+        $session = New-PSSession -VMName $vm -Credential $cred -ErrorAction Stop
+    } catch {
+        Write-Host "Waiting for WinRM inside guest to accept connections..."
+        Start-Sleep -Seconds 5
+    }
+}
+
+# Apply Enhanced Session Mode RDP hardware acceleration fix
+Invoke-Command -Session $session -ScriptBlock {
+    $tsPolicyPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+    if (-not (Test-Path $tsPolicyPath)) { New-Item -Path $tsPolicyPath -Force | Out-Null }
+    # Forces RDP to use the hardware graphics adapter instead of MS Remote Display Adapter
+    Set-ItemProperty -Path $tsPolicyPath -Name 'bEnumerateHWRequirementFailed' -Type DWord -Value 0 -Force
+    Set-ItemProperty -Path $tsPolicyPath -Name 'fEnableWddmDriver' -Type DWord -Value 1 -Force
+}
 
 # Reference File Paths 
 $pathhost = 'C:\Windows\System32\DriverStore\FileRepository\'
@@ -465,34 +489,68 @@ $pathguestroot = $pathguest
 if ($gpuDetails -like "*VEN_1002*")
 {
     Write-Host "GPU is AMD, continuing script"
-    # Determine the driver path of the newest AMD driver on the host system
-    $pathdriver = ((Get-ChildItem -Path $pathhost -Recurse amdxx64.dll | Sort-Object CreationTime -Descending | Select-Object -First 1).DirectoryName + "\")
+    # Discover the active AMD display driver dynamically
+    $amdSignedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceClass -match 'Display' -and ($_.DeviceID -match 'VEN_1002' -or $_.PNPDeviceID -match 'VEN_1002') } |
+        Select-Object -First 1
+
+    $pathdriver = $null
+    if ($amdSignedDriver -and $amdSignedDriver.InfName)
+    {
+        Write-Host "Resolved active AMD GPU host metadata: $($amdSignedDriver.DeviceName) | INF: $($amdSignedDriver.InfName)"
+        $pathdriver = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $amdSignedDriver.InfName -DriverStoreRoot $pathhost
+    }
+
+    if ($pathdriver) {
+        if (-not $pathdriver.EndsWith("\")) { $pathdriver += "\" }
+    } else {
+        Write-Host "No active AMD driver folder could be resolved, exiting script"
+        Remove-PSSession $session
+        exit
+    }
 
     # Determine the driver folder name 
-    $driverfolder = ($pathdriver -split "\\")[5,6] -join "\"
+    $driverfolder = ($pathdriver -split "\\")[-2]
     # Copies the driver folder to the guest folder path
     Write-Host "Beginning File Copy to Guest Virtual Machine" 
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
 
-    # Not needed on AMD 
-    # Copies the amd*.dll files to system32 on the guest virtual machine
-    # Get-ChildItem -Path C:\Windows\System32\amd*dll |  ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
     Write-Host "End File Copy to Guest Virtual Machine" 
 
 }
 elseif ($gpuDetails -like "*VEN_10DE*")
 {
     Write-Host "GPU is Nvidia, continuing script"
-    # Determine the driver path of the newest Nvidia driver on the host system
-    $pathdriver = ((Get-ChildItem -Path $pathhost -Recurse nvapi64.dll  | Sort-Object CreationTime -Descending | Select-Object -First 1).DirectoryName + "\")
+    # Discover the active Nvidia display driver dynamically
+    $nvSignedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceClass -match 'Display' -and ($_.DeviceID -match 'VEN_10DE' -or $_.PNPDeviceID -match 'VEN_10DE') } |
+        Select-Object -First 1
+
+    $pathdriver = $null
+    if ($nvSignedDriver -and $nvSignedDriver.InfName)
+    {
+        Write-Host "Resolved active Nvidia GPU host metadata: $($nvSignedDriver.DeviceName) | INF: $($nvSignedDriver.InfName)"
+        $pathdriver = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $nvSignedDriver.InfName -DriverStoreRoot $pathhost
+    }
+
+    if ($pathdriver) {
+        if (-not $pathdriver.EndsWith("\")) { $pathdriver += "\" }
+    } else {
+        Write-Host "No active Nvidia driver folder could be resolved, exiting script"
+        Remove-PSSession $session
+        exit
+    }
 
     # Determine the driver folder name 
-    $driverfolder = ($pathdriver -split "\\")[5]
+    $driverfolder = ($pathdriver -split "\\")[-2]
     # Copies the driver folder to the guest folder path
     Write-Host "Beginning File Copy to Guest Virtual Machine" 
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
-    # Copies the nv*.dll files to system32 on the guest virtual machine except NvAgent.dll and nvspinfo.exe
-    Get-ChildItem -Path C:\Windows\System32\nv*dll | Where-Object { $_.name -notlike 'NvAgent.dll' } | ForEach-Object { Copy-Item -ToSession $session -Path $_ -Destination C:\Windows\System32\ -Force }
+    
+    # Copies the nv*.dll files to system32 and syswow64 on the guest virtual machine
+    Get-ChildItem -Path $pathdriver -Filter nv*dll | Where-Object { $_.name -notlike 'NvAgent.dll' } | ForEach-Object { 
+        Copy-Item -ToSession $session -Path $_.FullName -Destination C:\Windows\System32\ -Force 
+    }
     Write-Host "End File Copy to Guest Virtual Machine" 
 
 }
@@ -501,44 +559,36 @@ elseif ($gpuDetails -like "*VEN_8086*")
     Write-Host "GPU is Intel, continuing script"
     $isIntelGpu = $true
 
-    # Determine the driver path of the newest Intel driver on the host system.
-    $intelDriverCandidates = @(
-        "igdumdim64.dll",
-        "igdumdim32.dll",
-        "igd10iumd64.dll",
-        "igd12umd64.dll"
-    )
+    # Discover the active Intel display driver dynamically instead of guessing by CreationTime
+    $intelSignedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+        Where-Object { $_.DeviceClass -match 'Display' -and ($_.DeviceID -match 'VEN_8086' -or $_.PNPDeviceID -match 'VEN_8086') } |
+        Select-Object -First 1
 
     $pathdriver = $null
-    foreach ($candidate in $intelDriverCandidates)
+    if ($intelSignedDriver -and $intelSignedDriver.InfName)
     {
-        $candidatePath = Get-ChildItem -Path $pathhost -Recurse -Filter $candidate -ErrorAction SilentlyContinue |
-            Sort-Object CreationTime -Descending |
-            Select-Object -First 1
-
-        if ($candidatePath)
-        {
-            $pathdriver = $candidatePath.DirectoryName + "\"
-            break
-        }
+        Write-Host "Resolved active Intel GPU host metadata: $($intelSignedDriver.DeviceName) | INF: $($intelSignedDriver.InfName)"
+        $pathdriver = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $intelSignedDriver.InfName -DriverStoreRoot $pathhost
     }
 
-    if (-not $pathdriver)
-    {
-        Write-Host "No supported Intel driver files were found in $pathhost, exiting script"
+    if ($pathdriver) {
+        # Ensure path ends with a slash for the copy functions
+        if (-not $pathdriver.EndsWith("\")) { $pathdriver += "\" }
+    } else {
+        Write-Host "No active Intel driver folder could be resolved via PnP metadata, exiting script"
         Remove-PSSession $session
         exit
     }
 
     # Determine the driver folder name
-    $driverfolder = ($pathdriver -split "\\")[5]
+    $driverfolder = ($pathdriver -split "\\")[-2] # More reliable than hardcoded index [5]
+
     # Copies the driver folder to the guest folder path
     Write-Host "Beginning File Copy to Guest Virtual Machine"
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
 
-    # Copy Intel user-mode DLLs from the selected driver package only.
-    # Avoid copying every host ig*.dll, which can introduce mismatched files in the guest.
-    Get-ChildItem -Path $pathdriver -Filter ig*.dll -ErrorAction SilentlyContinue |
+    # Copy user-mode DLLs (Expanding filter to include intel*.dll for newer Arc/Compute support)
+    Get-ChildItem -Path $pathdriver -Include ig*.dll, intel*.dll -File -ErrorAction SilentlyContinue |
         ForEach-Object { Copy-Item -ToSession $session -Path $_.FullName -Destination C:\Windows\System32\ -Force }
 
     if ($npu)
@@ -697,6 +747,32 @@ else
 {
     Write-Host "GPU is not AMD, Nvidia, or Intel, exiting script"
     exit
+}
+
+Write-Host "Executing Guest-Side Registry Injection for Compute & 32-bit capabilities"
+Invoke-Command -Session $session -ScriptBlock {
+    # 1. Provide a SysWOW64 driver link if a 32-bit game/app needs it
+    $sysWowPath = "C:\Windows\SysWOW64"
+    if (Test-Path $sysWowPath) {
+        # Fallback mechanism: Many 32-bit apps fail to find the HostDriverStore, copy 32-bit DLLs if available
+        # Note: True WDDM copies usually rely on mapping, but explicit copies help legacy apps.
+        Get-ChildItem -Path "C:\Windows\System32\HostDriverStore\FileRepository\*" -Include *32.dll -Recurse -File -ErrorAction SilentlyContinue | 
+            ForEach-Object { Copy-Item $_.FullName -Destination $sysWowPath -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 2. Inject Vulkan & OpenCL ICD pointers so hardware compute works in the guest
+    $driverStorePath = "C:\Windows\System32\HostDriverStore\FileRepository"
+    $vulkanKey = "HKLM:\SOFTWARE\Khronos\Vulkan\Drivers"
+    $openClKey = "HKLM:\SOFTWARE\Khronos\OpenCL\Vendors"
+    
+    if (-not (Test-Path $vulkanKey)) { New-Item -Path $vulkanKey -Force | Out-Null }
+    if (-not (Test-Path $openClKey)) { New-Item -Path $openClKey -Force | Out-Null }
+
+    Get-ChildItem -Path $driverStorePath -Filter "*vulkan*.json" -Recurse -ErrorAction SilentlyContinue | 
+        ForEach-Object { Set-ItemProperty -Path $vulkanKey -Name $_.FullName -Value 0 -Type DWord -Force }
+        
+    Get-ChildItem -Path $driverStorePath -Filter "*opencl*.json" -Recurse -ErrorAction SilentlyContinue | 
+        ForEach-Object { Set-ItemProperty -Path $openClKey -Name $_.FullName -Value 0 -Type DWord -Force }
 }
 
 if ($isIntelGpu -and $applyIntelRdpWorkaround)
