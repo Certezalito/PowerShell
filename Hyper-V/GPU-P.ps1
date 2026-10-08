@@ -119,8 +119,21 @@ function Resolve-DriverStoreFolderFromPublishedInf
 
     $resolvedFolder = $null
 
-    # First try to map published INF (oem*.inf) to Driver Store Path via pnputil output.
-    $pnputilOutput = @(pnputil /enum-drivers /files 2>$null)
+    # Method 1: Use Get-WindowsDriver (Most reliable on modern Windows as it provides the direct path)
+    $winDriver = Get-WindowsDriver -Online -All -ErrorAction SilentlyContinue | Where-Object { $_.Driver -ieq $PublishedInfName } | Select-Object -First 1
+    if ($winDriver -and $winDriver.OriginalFileName)
+    {
+        $potentialPath = $winDriver.OriginalFileName
+        if (Test-Path $potentialPath)
+        {
+            $resolvedFolder = Split-Path -Path $potentialPath -Parent
+            Write-Host "Resolved folder via Get-WindowsDriver: $resolvedFolder"
+            return $resolvedFolder
+        }
+    }
+
+    # Method 2: Try to map published INF (oem*.inf) to Driver Store Path via pnputil output.
+    $pnputilOutput = @(pnputil /enum-drivers 2>$null)
     if ($LASTEXITCODE -eq 0 -and $pnputilOutput.Count -gt 0)
     {
         $blockText = ""
@@ -466,7 +479,7 @@ while (-not $session) {
     try {
         $session = New-PSSession -VMName $vm -Credential $cred -ErrorAction Stop
     } catch {
-        Write-Host "Waiting for WinRM inside guest to accept connections..."
+        Write-Host "Waiting for WinRM inside guest to accept connections... Last error: $($_.Exception.Message)"
         Start-Sleep -Seconds 5
     }
 }
@@ -568,7 +581,11 @@ elseif ($gpuDetails -like "*VEN_8086*")
     if ($intelSignedDriver -and $intelSignedDriver.InfName)
     {
         Write-Host "Resolved active Intel GPU host metadata: $($intelSignedDriver.DeviceName) | INF: $($intelSignedDriver.InfName)"
-        $pathdriver = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $intelSignedDriver.InfName -DriverStoreRoot $pathhost
+        
+        $intelPciId = $intelSignedDriver.DeviceID
+        if (-not $intelPciId) { $intelPciId = $intelSignedDriver.PNPDeviceID }
+
+        $pathdriver = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $intelSignedDriver.InfName -DriverStoreRoot $pathhost -PciInstanceId $intelPciId
     }
 
     if ($pathdriver) {
