@@ -17,6 +17,7 @@
 $vm = ""
 $user = ""
 $password = "" 
+
 # Optional: set to a PCI token such as DEV_7D67 to force a specific partitionable device
 $preferredGpuIdToken = ""
 # Optional: set to a PCI token such as DEV_AD1D to force a specific NPU/non-display partitionable device
@@ -27,6 +28,7 @@ $enableNpuProvisioning = $false
 $applyIntelRdpWorkaround = $false
 # Optional: faster package transfer via zip archive over PowerShell Direct
 $useArchiveTransfer = $true
+
 
 function Get-PciInstanceIdFromPartitionableName
 {
@@ -105,6 +107,119 @@ function Copy-DriverPackageToGuest
     {
         Copy-Item -ToSession $Session -Path ($resolvedSourceFolder + '\\') -Destination $GuestDriverStoreRoot -Recurse -Force
     }
+}
+
+function Test-GuestDriverDeployment
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.Runspaces.PSSession]$Session,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceFolder,
+        [Parameter(Mandatory = $true)]
+        [string]$GuestDriverStoreRoot,
+        [string[]]$System32Patterns = @(),
+        [string[]]$ExcludePatterns = @()
+    )
+
+    Write-Host "`n=== Validating Driver Deployment on Guest ==="
+    $resolvedSource = (Resolve-Path -Path $SourceFolder).Path
+    $packageFolderName = Split-Path -Path ($resolvedSource.TrimEnd('\')) -Leaf
+    $hostPackageFiles = @(Get-ChildItem -Path $resolvedSource -File)
+
+    # 1. Validate DriverStore Package
+    $guestStoreCheck = Invoke-Command -Session $Session -ScriptBlock {
+        param($driverStoreRoot, $folderName)
+        $destPath = Join-Path $driverStoreRoot $folderName
+        if (Test-Path $destPath)
+        {
+            $files = @(Get-ChildItem -Path $destPath -File)
+            return @{ Exists = $true; Count = $files.Count }
+        }
+        return @{ Exists = $false; Count = 0 }
+    } -ArgumentList $GuestDriverStoreRoot, $packageFolderName
+
+    if ($guestStoreCheck.Exists)
+    {
+        Write-Host ("  [HostDriverStore] Package verified: {0} ({1}/{2} files present)" -f $packageFolderName, $guestStoreCheck.Count, $hostPackageFiles.Count)
+    }
+    else
+    {
+        Write-Warning ("  [HostDriverStore] Package folder missing in guest: {0}" -f $packageFolderName)
+    }
+
+    # 2. Validate System32 DLLs if patterns were specified
+    if ($System32Patterns -and $System32Patterns.Count -gt 0)
+    {
+        $expectedDlls = @(
+            Get-ChildItem -Path (Join-Path $resolvedSource '*') -Include $System32Patterns -File |
+                Where-Object {
+                    $item = $_
+                    $excluded = $false
+                    foreach ($pattern in $ExcludePatterns)
+                    {
+                        if ($item.Name -like $pattern) { $excluded = $true; break }
+                    }
+                    -not $excluded
+                }
+        )
+        if ($expectedDlls.Count -gt 0)
+        {
+            $serializedExpected = @($expectedDlls | ForEach-Object { @{ Name = $_.Name; Length = $_.Length } })
+            $dllValidation = Invoke-Command -Session $Session -ScriptBlock {
+                param($expectedItems)
+                $missing = @()
+                $mismatched = @()
+                $matched = 0
+
+                foreach ($item in $expectedItems)
+                {
+                    $targetPath = Join-Path 'C:\Windows\System32' $item.Name
+                    if (-not (Test-Path $targetPath))
+                    {
+                        $missing += $item.Name
+                    }
+                    else
+                    {
+                        $guestItem = Get-Item $targetPath
+                        if ($guestItem.Length -ne $item.Length)
+                        {
+                            $mismatched += ("{0} (Host: {1} B, Guest: {2} B)" -f $item.Name, $item.Length, $guestItem.Length)
+                        }
+                        else
+                        {
+                            $matched++
+                        }
+                    }
+                }
+
+                return @{
+                    Matched = $matched
+                    Total = $expectedItems.Count
+                    Missing = $missing
+                    Mismatched = $mismatched
+                }
+            } -ArgumentList (,$serializedExpected)
+
+            if ($dllValidation.Matched -eq $dllValidation.Total)
+            {
+                Write-Host ("  [System32 DLLs] All {0} user-mode DLLs verified and matched by size." -f $dllValidation.Total)
+            }
+            else
+            {
+                Write-Warning ("  [System32 DLLs] Mismatch detected: {0}/{1} matched." -f $dllValidation.Matched, $dllValidation.Total)
+                if ($dllValidation.Missing.Count -gt 0)
+                {
+                    Write-Warning ("    Missing in guest: {0}" -f ($dllValidation.Missing -join ', '))
+                }
+                if ($dllValidation.Mismatched.Count -gt 0)
+                {
+                    Write-Warning ("    Size mismatch: {0}" -f ($dllValidation.Mismatched -join ', '))
+                }
+            }
+        }
+    }
+    Write-Host "=== End Validation ===`n"
 }
 
 function Resolve-DriverStoreFolderFromPublishedInf
@@ -529,6 +644,7 @@ if ($gpuDetails -like "*VEN_1002*")
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
 
     Write-Host "End File Copy to Guest Virtual Machine" 
+    Test-GuestDriverDeployment -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot
 
 }
 elseif ($gpuDetails -like "*VEN_10DE*")
@@ -560,11 +676,14 @@ elseif ($gpuDetails -like "*VEN_10DE*")
     Write-Host "Beginning File Copy to Guest Virtual Machine" 
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
     
-    # Copies the nv*.dll files to system32 and syswow64 on the guest virtual machine
+    # Copies the nv*.dll files to system32 and syswow64 on the guest virtual machine.
+    # Note: NvAgent.dll is explicitly excluded because it is Microsoft's Network Virtualization
+    # Agent (a Windows/Hyper-V SDN system component), NOT an Nvidia graphics driver file.
     Get-ChildItem -Path $pathdriver -Filter nv*dll | Where-Object { $_.name -notlike 'NvAgent.dll' } | ForEach-Object { 
         Copy-Item -ToSession $session -Path $_.FullName -Destination C:\Windows\System32\ -Force 
     }
     Write-Host "End File Copy to Guest Virtual Machine" 
+    Test-GuestDriverDeployment -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -System32Patterns @('nv*.dll') -ExcludePatterns @('NvAgent.dll')
 
 }
 elseif ($gpuDetails -like "*VEN_8086*")
@@ -605,7 +724,7 @@ elseif ($gpuDetails -like "*VEN_8086*")
     Copy-DriverPackageToGuest -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
 
     # Copy user-mode DLLs (Expanding filter to include intel*.dll for newer Arc/Compute support)
-    Get-ChildItem -Path $pathdriver -Include ig*.dll, intel*.dll -File -ErrorAction SilentlyContinue |
+    Get-ChildItem -Path (Join-Path $pathdriver '*') -Include ig*.dll, intel*.dll -File -ErrorAction SilentlyContinue |
         ForEach-Object { Copy-Item -ToSession $session -Path $_.FullName -Destination C:\Windows\System32\ -Force }
 
     if ($npu)
@@ -758,6 +877,7 @@ elseif ($gpuDetails -like "*VEN_8086*")
     }
 
     Write-Host "End File Copy to Guest Virtual Machine"
+    Test-GuestDriverDeployment -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -System32Patterns @('ig*.dll', 'intel*.dll')
 
 }
 else
