@@ -727,155 +727,6 @@ elseif ($gpuDetails -like "*VEN_8086*")
     Get-ChildItem -Path (Join-Path $pathdriver '*') -Include ig*.dll, intel*.dll -File -ErrorAction SilentlyContinue |
         ForEach-Object { Copy-Item -ToSession $session -Path $_.FullName -Destination C:\Windows\System32\ -Force }
 
-    if ($npu)
-    {
-        Write-Host "Locating Intel NPU driver package on host"
-        $npuPciInstanceId = Get-PciInstanceIdFromPartitionableName -PartitionableName $npu.Name
-        $normalizedNpuPciInstanceId = ($npuPciInstanceId -replace '\\+', '\').ToUpperInvariant()
-        $npuLookupKey = ($normalizedNpuPciInstanceId -replace '\\', '')
-
-        $npuSignedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
-            Where-Object {
-                $deviceIdRaw = "$($_.DeviceID)"
-                $pnpDeviceIdRaw = "$($_.PNPDeviceID)"
-                $deviceIdNorm = (($deviceIdRaw -replace '\\+', '\').ToUpperInvariant() -replace '\\', '')
-                $pnpDeviceIdNorm = (($pnpDeviceIdRaw -replace '\\+', '\').ToUpperInvariant() -replace '\\', '')
-
-                ($deviceIdNorm -eq $npuLookupKey) -or ($pnpDeviceIdNorm -eq $npuLookupKey)
-            } |
-            Select-Object -First 1
-
-        if ($npuSignedDriver -and $npuSignedDriver.InfName)
-        {
-            Write-Host "Resolved NPU host metadata:" $npuSignedDriver.DeviceName "| Class:" $npuSignedDriver.DeviceClass "| INF:" $npuSignedDriver.InfName
-
-            $npuClassName = "$($npuSignedDriver.DeviceClass)"
-            if ($npuClassName -match 'display')
-            {
-                Write-Host "Resolved device class appears to be Display, not Neural processor. Skipping NPU package copy for target:" $npuPciInstanceId
-                Write-Host "Tip: set \$preferredNpuIdToken to the DEV_ value for the Intel AI Boost/NPU device"
-            }
-            else
-            {
-                $npuInfName = $npuSignedDriver.InfName
-                $npuDriverFolderPath = (Get-ChildItem -Path $pathhost -Recurse -Filter $npuInfName -ErrorAction SilentlyContinue |
-                    Sort-Object CreationTime -Descending |
-                    Select-Object -First 1).DirectoryName
-
-                if (-not $npuDriverFolderPath -and $npuInfName -like 'oem*.inf')
-                {
-                    Write-Host "INF appears to be published name ($npuInfName). Resolving DriverStore folder via associated files"
-                    $associatedDriverFiles = @(Get-CimAssociatedInstance -InputObject $npuSignedDriver -Association Win32_PnPSignedDriverCIMDataFile -ErrorAction SilentlyContinue)
-                    $driverStoreFile = $associatedDriverFiles |
-                        Where-Object { $_.Name -like (Join-Path $pathhost '*') } |
-                        Select-Object -First 1
-
-                    if ($driverStoreFile)
-                    {
-                        $npuDriverFolderPath = Split-Path -Path $driverStoreFile.Name -Parent
-                    }
-
-                    if (-not $npuDriverFolderPath)
-                    {
-                        Write-Host "Associated file lookup failed. Trying pnputil and INF token fallback"
-                        $npuDriverFolderPath = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $npuInfName -DriverStoreRoot $pathhost -PciInstanceId $normalizedNpuPciInstanceId
-                    }
-                }
-
-                if ($npuDriverFolderPath)
-                {
-                    $npuPathDriver = $npuDriverFolderPath + "\"
-
-                    Write-Host "Copying Intel NPU driver package to guest"
-                    Copy-DriverPackageToGuest -Session $session -SourceFolder $npuPathDriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
-
-                    Write-Host "Triggering in-guest driver scan to bind NPU device"
-                    $npuFolderName = Split-Path -Path ($npuPathDriver.TrimEnd('\')) -Leaf
-                    Invoke-Command -Session $session -ScriptBlock {
-                        param($driverRoot, $folderName)
-                        if (-not $driverRoot)
-                        {
-                            Write-Host "Guest driver root path is empty; skipping NPU INF install"
-                            return
-                        }
-
-                        $packagePath = Join-Path $driverRoot $folderName
-                        if (-not (Test-Path -Path $packagePath))
-                        {
-                            Write-Host "NPU package path not found in guest:" $packagePath
-                            return
-                        }
-
-                        $infFiles = @(Get-ChildItem -Path $packagePath -Filter *.inf -File -ErrorAction SilentlyContinue)
-                        if ($infFiles.Count -eq 0)
-                        {
-                            Write-Host "No INF files found in guest NPU package path:" $packagePath
-                        }
-
-                        foreach ($inf in $infFiles)
-                        {
-                            Write-Host "pnputil /add-driver $($inf.FullName) /install"
-                            $pnpResult = pnputil /add-driver $inf.FullName /install 2>&1
-                            Write-Host ($pnpResult -join "`n")
-                        }
-                        Write-Host "pnputil /scan-devices"
-                        $scanResult = pnputil /scan-devices 2>&1
-                        Write-Host ($scanResult -join "`n")
-
-                        Write-Host "NPU runtime compatibility check"
-                        $npuDevices = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
-                            Where-Object {
-                                $_.Class -eq 'ComputeAccelerator' -or
-                                $_.InstanceId -like '*VEN_1414*DEV_008A*' -or
-                                $_.InstanceId -like '*VEN_8086*DEV_AD1D*' -or
-                                $_.FriendlyName -like '*AI Boost*'
-                            })
-
-                        if ($npuDevices.Count -eq 0)
-                        {
-                            Write-Host "NPU verdict: Not enumerated in guest"
-                        }
-                        else
-                        {
-                            foreach ($device in $npuDevices)
-                            {
-                                Write-Host ("NPU device: Status={0} Name={1} InstanceId={2}" -f $device.Status, $device.FriendlyName, $device.InstanceId)
-                            }
-
-                            $hasVirtualError = $npuDevices | Where-Object {
-                                $_.InstanceId -like '*VEN_1414*DEV_008A*' -and $_.Status -eq 'Error'
-                            }
-                            $hasNativeStarted = $npuDevices | Where-Object {
-                                $_.InstanceId -like '*VEN_8086*DEV_AD1D*' -and $_.Status -eq 'OK'
-                            }
-
-                            if ($hasNativeStarted)
-                            {
-                                Write-Host "NPU verdict: Native Intel NPU path is active in guest"
-                            }
-                            elseif ($hasVirtualError)
-                            {
-                                Write-Host "NPU verdict: Virtual compute fallback detected with error state; likely unsupported on current stack"
-                            }
-                            else
-                            {
-                                Write-Host "NPU verdict: Enumerated, but not in a confirmed started native state"
-                            }
-                        }
-                    } -ArgumentList $pathguestroot, $npuFolderName
-                }
-                else
-                {
-                    Write-Host "Could not locate Intel NPU driver folder in DriverStore for INF:" $npuInfName
-                }
-            }
-        }
-        else
-        {
-            Write-Host "Could not resolve Intel NPU signed driver metadata from host for:" $npuPciInstanceId
-        }
-    }
-
     Write-Host "End File Copy to Guest Virtual Machine"
     Test-GuestDriverDeployment -Session $session -SourceFolder $pathdriver -GuestDriverStoreRoot $pathguestroot -System32Patterns @('ig*.dll', 'intel*.dll')
 
@@ -883,7 +734,166 @@ elseif ($gpuDetails -like "*VEN_8086*")
 else
 {
     Write-Host "GPU is not AMD, Nvidia, or Intel, exiting script"
+    Remove-PSSession $session
     exit
+}
+
+if ($npu)
+{
+    Write-Host "Locating NPU driver package on host"
+    $npuPciInstanceId = Get-PciInstanceIdFromPartitionableName -PartitionableName $npu.Name
+    $normalizedNpuPciInstanceId = ($npuPciInstanceId -replace '\\+', '\').ToUpperInvariant()
+    $npuLookupKey = ($normalizedNpuPciInstanceId -replace '\\', '')
+
+    $npuVenToken = $null
+    $npuDevToken = $null
+    if ($normalizedNpuPciInstanceId -match '(VEN_[0-9A-F]{4})') { $npuVenToken = $matches[1] }
+    if ($normalizedNpuPciInstanceId -match '(DEV_[0-9A-F]{4})') { $npuDevToken = $matches[1] }
+    $npuHwPattern = if ($npuVenToken -and $npuDevToken) { "*$npuVenToken*$npuDevToken*" } else { "*VEN_8086*DEV_AD1D*" }
+
+    $npuSignedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue |
+        Where-Object {
+            $deviceIdRaw = "$($_.DeviceID)"
+            $pnpDeviceIdRaw = "$($_.PNPDeviceID)"
+            $deviceIdNorm = (($deviceIdRaw -replace '\\+', '\').ToUpperInvariant() -replace '\\', '')
+            $pnpDeviceIdNorm = (($pnpDeviceIdRaw -replace '\\+', '\').ToUpperInvariant() -replace '\\', '')
+
+            ($deviceIdNorm -eq $npuLookupKey) -or ($pnpDeviceIdNorm -eq $npuLookupKey)
+        } |
+        Select-Object -First 1
+
+    if ($npuSignedDriver -and $npuSignedDriver.InfName)
+    {
+        Write-Host "Resolved NPU host metadata:" $npuSignedDriver.DeviceName "| Class:" $npuSignedDriver.DeviceClass "| INF:" $npuSignedDriver.InfName
+
+        $npuClassName = "$($npuSignedDriver.DeviceClass)"
+        if ($npuClassName -match 'display')
+        {
+            Write-Host "Resolved device class appears to be Display, not Neural processor. Skipping NPU package copy for target:" $npuPciInstanceId
+            Write-Host "Tip: set \$preferredNpuIdToken to the DEV_ value for the Intel AI Boost/NPU device"
+        }
+        else
+        {
+            $npuInfName = $npuSignedDriver.InfName
+            $npuDriverFolderPath = Resolve-DriverStoreFolderFromPublishedInf -PublishedInfName $npuInfName -DriverStoreRoot $pathhost -PciInstanceId $normalizedNpuPciInstanceId
+
+            if (-not $npuDriverFolderPath -and $npuInfName -like 'oem*.inf')
+            {
+                Write-Host "Primary resolution did not find folder for $npuInfName. Trying associated CIM files fallback"
+                $associatedDriverFiles = @(Get-CimAssociatedInstance -InputObject $npuSignedDriver -Association Win32_PnPSignedDriverCIMDataFile -ErrorAction SilentlyContinue)
+                $driverStoreFile = $associatedDriverFiles |
+                    Where-Object { $_.Name -like (Join-Path $pathhost '*') } |
+                    Select-Object -First 1
+
+                if ($driverStoreFile)
+                {
+                    $npuDriverFolderPath = Split-Path -Path $driverStoreFile.Name -Parent
+                }
+            }
+
+            if ($npuDriverFolderPath)
+            {
+                $npuPathDriver = $npuDriverFolderPath.TrimEnd('\') + "\"
+
+                Write-Host "Copying NPU driver package to guest"
+                Copy-DriverPackageToGuest -Session $session -SourceFolder $npuPathDriver -GuestDriverStoreRoot $pathguestroot -UseArchiveTransfer $useArchiveTransfer
+                Test-GuestDriverDeployment -Session $session -SourceFolder $npuPathDriver -GuestDriverStoreRoot $pathguestroot
+
+                Write-Host "Triggering in-guest driver scan to bind NPU device"
+                $npuFolderName = Split-Path -Path ($npuPathDriver.TrimEnd('\')) -Leaf
+                Invoke-Command -Session $session -ScriptBlock {
+                    param($driverRoot, $folderName, $hwPattern)
+                    if (-not $driverRoot)
+                    {
+                        Write-Host "Guest driver root path is empty; skipping NPU INF install"
+                        return
+                    }
+
+                    $packagePath = Join-Path $driverRoot $folderName
+                    if (-not (Test-Path -Path $packagePath))
+                    {
+                        Write-Host "NPU package path not found in guest:" $packagePath
+                        return
+                    }
+
+                    $infFiles = @(Get-ChildItem -Path $packagePath -Filter *.inf -File -ErrorAction SilentlyContinue)
+                    if ($infFiles.Count -eq 0)
+                    {
+                        Write-Host "No INF files found in guest NPU package path:" $packagePath
+                    }
+
+                    foreach ($inf in $infFiles)
+                    {
+                        Write-Host "pnputil /add-driver $($inf.FullName) /install"
+                        $pnpResult = pnputil /add-driver $inf.FullName /install 2>&1
+                        Write-Host ($pnpResult -join "`n")
+                    }
+                    Write-Host "pnputil /scan-devices"
+                    $scanResult = pnputil /scan-devices 2>&1
+                    Write-Host ($scanResult -join "`n")
+
+                    Write-Host "NPU runtime compatibility check"
+                    $npuDevices = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
+                        Where-Object {
+                            $_.Class -eq 'ComputeAccelerator' -or
+                            $_.InstanceId -like '*VEN_1414*DEV_008A*' -or
+                            $_.InstanceId -like $hwPattern -or
+                            $_.FriendlyName -like '*AI Boost*' -or
+                            $_.FriendlyName -like '*NPU*'
+                        })
+
+                    if ($npuDevices.Count -eq 0)
+                    {
+                        Write-Host "NPU verdict: Not enumerated in guest"
+                    }
+                    else
+                    {
+                        foreach ($device in $npuDevices)
+                        {
+                            Write-Host ("NPU device: Status={0} Name={1} InstanceId={2}" -f $device.Status, $device.FriendlyName, $device.InstanceId)
+                        }
+
+                        $hasVirtualError = $npuDevices | Where-Object {
+                            $_.InstanceId -like '*VEN_1414*DEV_008A*' -and $_.Status -eq 'Error'
+                        }
+                        $hasNativeStarted = $npuDevices | Where-Object {
+                            ($_.InstanceId -like $hwPattern -or $_.Class -eq 'ComputeAccelerator') -and
+                            $_.InstanceId -notlike '*VEN_1414*DEV_008A*' -and
+                            $_.Status -eq 'OK'
+                        }
+                        $hasVirtualStarted = $npuDevices | Where-Object {
+                            $_.InstanceId -like '*VEN_1414*DEV_008A*' -and $_.Status -eq 'OK'
+                        }
+
+                        if ($hasNativeStarted)
+                        {
+                            Write-Host "NPU verdict: Native NPU path is active in guest"
+                        }
+                        elseif ($hasVirtualStarted)
+                        {
+                            Write-Host "NPU verdict: Paravirtualized compute accelerator (VEN_1414&DEV_008A) is active in guest"
+                        }
+                        elseif ($hasVirtualError)
+                        {
+                            Write-Host "NPU verdict: Virtual compute fallback detected with error state; likely unsupported on current stack"
+                        }
+                        else
+                        {
+                            Write-Host "NPU verdict: Enumerated, but not in a confirmed started state"
+                        }
+                    }
+                } -ArgumentList $pathguestroot, $npuFolderName, $npuHwPattern
+            }
+            else
+            {
+                Write-Host "Could not locate NPU driver folder in DriverStore for INF:" $npuInfName
+            }
+        }
+    }
+    else
+    {
+        Write-Host "Could not resolve NPU signed driver metadata from host for:" $npuPciInstanceId
+    }
 }
 
 Write-Host "Executing Guest-Side Registry Injection for Compute & 32-bit capabilities"
